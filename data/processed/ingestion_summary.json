@@ -1,0 +1,14 @@
+{
+  "total_files_processed": 9,
+  "total_financial_metrics": 1642,
+  "total_narrative_chunks": 1207,
+  "sensitivity_breakdown": {
+    "public_financial": 1639,
+    "headcount_compensation": 3,
+    "public_narrative": 1207
+  },
+  "output_files": {
+    "financial_metrics": "/home/koustavbera/Code/Personal/resume_projects/self/Finny/Azentio/data/processed/financial_metrics.jsonl",
+    "narrative_chunks": "/home/koustavbera/Code/Personal/resume_projects/self/Finny/Azentio/data/processed/narrative_chunks.jsonl"
+  }
+}

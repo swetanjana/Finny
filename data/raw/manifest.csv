@@ -1,0 +1,10 @@
+file,format,doc_type,fiscal_year,source_url,default_sensitivity
+10K-2023.pdf,pdf,10-K,2023,https://www.sec.gov/edgar/browse/?CIK=320193&owner=exclude&action=getcompany&type=10-K,public_narrative
+10K-2024.pdf,pdf,10-K,2024,https://www.sec.gov/edgar/browse/?CIK=320193&owner=exclude&action=getcompany&type=10-K,public_narrative
+10K-2025.pdf,pdf,10-K,2025,https://www.sec.gov/edgar/browse/?CIK=320193&owner=exclude&action=getcompany&type=10-K,public_narrative
+10Q-2026.pdf,pdf,10-Q,2026-Q3,https://www.sec.gov/edgar/browse/?CIK=320193&owner=exclude&action=getcompany&type=10-Q,public_narrative
+10K-2023.xls,xls,10-K_financial_data,2023,https://www.sec.gov/edgar/browse/?CIK=320193&owner=exclude&action=getcompany&type=10-K,public_financial
+10K-2024.xls,xls,10-K_financial_data,2024,https://www.sec.gov/edgar/browse/?CIK=320193&owner=exclude&action=getcompany&type=10-K,public_financial
+10K-2025.xls,xls,10-K_financial_data,2025,https://www.sec.gov/edgar/browse/?CIK=320193&owner=exclude&action=getcompany&type=10-K,public_financial
+10Q-2026.xls,xls,10-Q_financial_data,2026-Q3,https://www.sec.gov/edgar/browse/?CIK=320193&owner=exclude&action=getcompany&type=10-Q,public_financial
+apple_metrics_curated.xlsx,xlsx,curated_metrics,2023-2025,derived_from_local_Apple_10-K_filings,public_financial
