@@ -1,0 +1,131 @@
+Metadata-Version: 2.4
+Name: finny
+Version: 0.1.0
+Summary: Financial-Data Agent over Apple SEC Filings with RBAC and Feedback Loop
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: groq>=0.9.0
+Requires-Dist: sentence-transformers>=3.0.0
+Requires-Dist: pandas>=2.2.0
+Requires-Dist: openpyxl>=3.1.0
+Requires-Dist: xlrd>=2.0.1
+Requires-Dist: pdfplumber>=0.11.0
+Requires-Dist: chromadb>=0.5.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: typer>=0.12.0
+Requires-Dist: rich>=13.7.0
+Requires-Dist: requests>=2.31.0
+Requires-Dist: yfinance>=0.2.40
+Requires-Dist: langchain>=1.3.14
+Requires-Dist: langgraph>=1.2.10
+Requires-Dist: langchain-groq>=1.1.3
+Requires-Dist: fastapi>=0.141.1
+Requires-Dist: uvicorn[standard]>=0.52.1
+
+This project uses uv package manager in ./venv python 3.12
+
+## Model stack
+
+- Embeddings: open-source (sentence-transformers), not OpenAI.
+- LLM: Groq-hosted models, not OpenAI.
+- No OpenAI API usage anywhere in this project.
+
+# Finny — Financial-Data Agent (Azentio Tech Round Assignment)
+
+Building an agentic system over Apple's public filings that ingests PDF+Excel data, enforces RBAC at the data layer, answers natural-language questions, and learns from feedback. Full brief: `AI_Agent_Dev_Assignment.md`. Grading weight: 50% working end-to-end, 25% architecture clarity, 15% scale awareness, 5% creativity, 5% communication — so scope is sequenced to guarantee a runnable ingest→answer→RBAC→feedback path before any polish.
+
+## Current state (as of 2026-08-11)
+
+- `data/raw/` has 4 filings (10-K FY23/24/25, 10-Q FY26-Q3) in both PDF and XLS, `apple_metrics_curated.xlsx` (curated `metrics` + `restricted_headcount` sheets), `manifest.csv` (per-file `default_sensitivity`), and a README documenting the sensitivity policy.
+- Sensitivity taxonomy already implied by the data: `public_narrative` (10-K/10-Q prose), `public_financial` (statement figures, curated metrics), `headcount_compensation` (restricted sheet — public-source data intentionally classified restricted so RBAC can be demoed honestly).
+- **Phases 0–4 are implemented and verified end-to-end** — scaffolding, ingestion (`src/finny/ingestion/`), understanding layer (`src/finny/understanding/`, SQLite + Chroma + Groq summaries), RBAC (`src/finny/rbac/`), and the LangGraph-based agent + Typer CLI (`src/finny/agent/`, `src/finny/interface/cli.py` — `ingest`, `build-index`, `ask`, `chat`, `status`). `requirements.txt`/`pyproject.toml` are already on `groq` + `sentence-transformers`, no `openai`. Full build/verification detail and known limitations are in `Explainaibility.md`.
+- **Phase 5 (feedback & learning loop) is implemented and verified**: `src/finny/feedback/store.py` — `query_log`/`feedback` SQLite tables, `finny feedback <query_id> --up/--down/--correct` CLI command, re-ranking (feedback on similar past queries shifts `search_filings`/`lookup_metric` ordering) and few-shot memory (upvoted/corrected answers injected as role-scoped examples via a `feedback_examples` Chroma collection). Two Phase 4 latency tweaks landed alongside it: `agent/loop.py` caches the compiled LangGraph per `(role, api_key)` instead of rebuilding it every turn, and `understanding/vector_store.py` caches the sentence-transformers embedding function and Chroma client instead of reloading them per call. Full design/verification detail in `Explainaibility.md` §24–30.
+- **Phase 7 is partially started**: `scripts/setup.sh` bootstraps a fresh clone end-to-end (`uv sync`, `.env` from `.env.example`, `finny build-index`, `finny status`, the eval gate) and `evals/` has a 17-case deterministic RBAC + metric-accuracy gate (`uv run python -m evals.run_evals` or `uv run pytest evals/`, no `GROQ_API_KEY` needed) plus a 4-case opt-in end-to-end NL suite (`--agent` / `FINNY_RUN_AGENT_EVALS=1`) — all 21 cases verified passing once the Groq quota recovered. Still missing: README, "what breaks at 100x" talking points write-up. Full detail in `Explainaibility.md` §31–32.
+- **Phases 4.5 and 6 are not started**: Phase 4.5 (multi-turn conversation memory in `chat`) was deliberately deferred in favor of Phase 5 since it's the graded path; no prompt-injection defenses (Phase 6).
+
+## Architecture decisions
+
+- **LLM**: Groq-hosted model (e.g. `llama-3.3-70b-versatile` for reasoning/tool-use; a smaller Groq model like `llama-3.1-8b-instant` as a cheap fallback for the injection classifier in Phase 6). Needs `GROQ_API_KEY` in `.env` (`python-dotenv`).
+- **Agent orchestration (Phase 4)**: LangChain + LangGraph (`langchain-groq` as the Groq model provider). The agent is an explicit `langgraph.graph.StateGraph` (`agent` node calls the LLM, `tools` node executes via `langgraph.prebuilt.ToolNode`, looping until no further tool calls) rather than `create_react_agent` or a hand-rolled loop — kept minimal/explicit for architecture clarity. Tools are LangChain `@tool`-decorated functions built per-call via a `build_tools(context)` factory, closed over the caller's `PermissionContext` so the model can never supply its own role/permissions as an argument. Phase 2's one-off understanding-file summaries still call the `groq` SDK directly (no agent loop there, so no LangChain benefit) — this is a deliberate split, not an inconsistency.
+- **Embeddings**: `sentence-transformers` running locally (e.g. `all-MiniLM-L6-v2` or `BAAI/bge-small-en-v1.5` if retrieval quality needs it) — no external embedding API, no cost/rate limits, works offline.
+- **requirements.txt update needed in Phase 0**: drop `openai`, add `groq` and `sentence-transformers`. Everything else (`pandas`, `openpyxl`, `pdfplumber`, `chromadb`, `python-dotenv`, `typer`, `rich`, `requests`, `yfinance`) stays.
+- **Storage**: Chroma (local, persisted to `data/index/chroma`, using a `sentence-transformers` embedding function) for narrative text chunks; SQLite (`data/db/finny.sqlite`) for structured metrics (from XLS + curated workbook), the feedback log, and an access audit log. No external DB — keeps it runnable with zero infra.
+- **RBAC enforcement point**: at the retrieval/tool layer, not the prompt. Every retrieval and metric-lookup call takes the caller's allowed sensitivity tags and filters _before_ anything reaches the LLM context — restricted rows/chunks are never fetched for an unauthorized role, so there's nothing to leak even via combination (e.g. "revenue per employee" for a role without `headcount_compensation` must hard-refuse that specific sub-computation, not silently omit it).
+- **Roles** (permission = set of allowed sensitivity tags):
+  - `ceo` → `public_narrative`, `public_financial`, `headcount_compensation` (all)
+  - `cto` → `public_narrative`, `public_financial` (no headcount/compensation)
+  - `analyst` → `public_financial` only (no filing narrative/MD&A/risk text, no headcount) — a third, more restricted role distinct from both above, representing e.g. an external/contractor persona that only needs numbers.
+- **Interface**: `typer` CLI first (guarantees "it runs"). A minimal FastAPI+HTML or Streamlit wrapper is a stretch add-on only after CLI+RBAC+feedback are solid — not before.
+
+## Implementation phases
+
+**Phase 0 — Scaffolding**
+`uv init` a `pyproject.toml` (python 3.12), update deps (`groq`, `sentence-transformers` in, `openai` out), create `src/finny/{ingestion,understanding,rbac,agent,feedback,interface}/`, `data/{processed,index,db}/`, `.env.example` (`GROQ_API_KEY=`). Trivial `uv run finny --help` smoke test.
+
+**Phase 1 — Data ingestion**
+
+- XLS/XLSX → `pandas`/`openpyxl`: parse into row-level records `{metric, period, value, unit, source, sensitivity}`. Curated workbook's `restricted_headcount` sheet is force-tagged `headcount_compensation` regardless of file-level manifest default (per its README); everything else inherits `manifest.csv`'s `default_sensitivity`.
+- PDF (10-K/10-Q) → `pdfplumber`: extract text per page/section, split into section-aware chunks (headers like "Item 1A. Risk Factors", "Item 7. MD&A", statements) rather than naive fixed-size windows, tag each chunk with `doc_type`, `fiscal_year`, `sensitivity=public_narrative`, `source_page`.
+- Output: normalized JSONL in `data/processed/` — one row per chunk/record with full provenance (file, page/section, sensitivity). This is the only ingestion output; everything downstream is derived, regenerable from raw + this step.
+
+**Phase 2 — Understanding layer**
+
+- Structured metrics → load into SQLite `metrics` table (indexed by metric+period+sensitivity) for exact numeric lookups — no LLM round-trip needed for "what was net income in FY2024".
+- Narrative chunks → embed locally with `sentence-transformers`, store in Chroma with metadata (`sensitivity`, `doc_type`, `fiscal_year`, `source`) so queries can filter by allowed tags at query time (not post-filter after retrieval).
+- Generate per-filing "understanding files" in `data/processed/summaries/`: one markdown per document (key sections, extracted headline metrics, provenance) — precomputed once at index time, generated via a Groq call so the agent's runtime context is cheap; raw re-parsing only happens on `scripts/build_index.py` re-runs, never per query.
+- `scripts/build_index.py`: single idempotent entrypoint that regenerates everything in Phase 1+2 from `data/raw/` — this is the "index-regeneration script" deliverable.
+
+**Phase 3 — RBAC**
+
+- `src/finny/rbac/`: role→allowed-tags table (hardcoded dict is fine for this scope), a `PermissionContext` passed into every tool call.
+- Metric lookup and vector-search tools both accept `allowed_sensitivities` and filter in the query itself (SQL `WHERE sensitivity IN (...)`, Chroma `where={"sensitivity": {"$in": [...]}}`) — never fetch-then-discard.
+- Derived/combined-metric guard: maintain a small map of "sensitive-dependent" computed metrics (e.g. revenue-per-employee needs headcount); if a requested computation depends on a tag the role lacks, refuse that computation explicitly rather than letting the model attempt it from partial context.
+- Log every query with role, allowed tags, and what was actually retrieved to the audit table — needed for the walkthrough's RBAC demo and for catching future leaks.
+
+**Phase 4 — Agent & query interface**
+
+- LangGraph tool-calling loop (LangChain tools, `langchain-groq` model provider): tools = `lookup_metric`, `search_filings`, `list_available_metrics`, optionally `get_live_stock_price` (yfinance, unrestricted/public) as a small creativity add-on.
+- System prompt: answer only from tool results, cite source/period, and if a tool declines due to RBAC, say access is restricted rather than guessing or apologizing vaguely.
+- CLI (`typer`): `finny ask --role cto "..."`, `finny chat --role analyst` for a REPL loop; `rich` for formatted output with sources.
+
+**Phase 4.5 — Multi-turn conversation memory**
+
+*Why this phase exists between Phase 4 and Phase 5*: not in the brief — this is a small, self-contained fix for a real gap, not a new subsystem. (An earlier draft of this phase also proposed a full session/login layer — `~/.finny/session.json`, `sessions`/`conversation_turns` SQLite tables, `finny login`/`logout`. That was cut: it isn't asked for anywhere in `AI_Agent_Dev_Assignment.md`, it reverses the deliberate Phase 7 talking point that auth/identity is out of scope for this CLI demo, and it would have delayed Phase 5 — the feedback loop — which is the part that's actually graded (50% weight on the ingest→answer→RBAC→feedback path). Phase 5 comes right after this.)
+
+### 4.5.1 — Multi-turn context (conversation memory in the agent loop)
+
+Currently `run_agent()` always starts with a blank `[SystemMessage, HumanMessage]`. For `finny chat`, prior turns should be in context so follow-up questions work. The fix:
+- `run_agent()` accepts an optional `history: list[BaseMessage]` argument (the LangChain message list from previous turns in this session).
+- `finny chat` maintains the message history in memory (process-local, not persisted) during a session and passes the accumulated `AIMessage`+`HumanMessage` pairs as the `history` argument to each new `run_agent()` call. This is zero additional storage — the messages are already in RAM; we just pass them forward instead of discarding.
+- For the `finny ask` (one-shot) command, history is empty — behavior unchanged.
+- **History trimming**: cap the injected history at the last `N_CONTEXT_TURNS = 6` turns (12 messages: 6 human + 6 AI) before the system prompt token budget overflows. Trim from the oldest end, never the most recent.
+
+### 4.5.2 — LangGraph graph caching (performance, closes optimization gap #8)
+
+`_build_graph(context, api_key)` is called once per `run_agent()` invocation. For a `chat` session, that's once per turn. Cache it: `@lru_cache(maxsize=8)` keyed on `(role, api_key)` in `agent/loop.py` — the graph structure is the same for the same role regardless of which query is being answered.
+
+### Deliverables checklist for Phase 4.5
+- `run_agent()` signature update: `history` parameter.
+- `finny chat` REPL: accumulate in-memory history and pass it on each turn.
+- `@lru_cache` on `_build_graph` (closes optimization #8 for free).
+- Smoke test: `finny chat --role cto`, ask a follow-up question that only makes sense given the prior turn (e.g. "and what about the year before that?") and confirm it resolves correctly.
+
+**Phase 5 — Feedback & learning loop**
+
+- SQLite `feedback` table: `(query, role, retrieved_ids, answer, rating, correction_text, timestamp)`. CLI supports `finny feedback <query_id> --up/--down/--correct "..."`.
+- Two concrete, demonstrable effects of feedback on future behavior:
+  1. **Re-ranking**: chunk/metric IDs with a history of thumbs-down for similar queries get a relevance penalty at retrieval time; thumbs-up gives a boost.
+  2. **Few-shot memory**: corrected/upvoted (query, answer) pairs are embedded (same local `sentence-transformers` model) and the most similar past ones are injected as few-shot examples into the prompt for new similar queries.
+- A short before/after demo (same question asked, downvoted/corrected, asked again) is part of the walkthrough.
+
+**Phase 6 — Prompt injection defenses (bonus)**
+
+- Ingestion-time: flag chunks containing instruction-like patterns ("ignore previous instructions", "system:", etc.) with a `flagged=true` metadata field; never strip silently — surface in the understanding file so it's auditable.
+- Prompt structure: retrieved content is always wrapped in clearly delimited data blocks with an explicit system instruction that content inside is data, never instructions.
+- User-input side: a lightweight heuristic + small Groq-model classifier flags obvious injection attempts in the question itself before it reaches the main agent loop.
+
+**Phase 7 — Tests, README, walkthrough prep**
+
+- Small eval set: ~15 Q&A pairs across roles (including ones that must be refused) to assert RBAC never leaks and metric answers match source values — runnable as a pytest/script gate.
+- README: setup (`uv sync`, `.env` with `GROQ_API_KEY`), `uv run finny build-index`, `uv run finny ask ...`, note on what's public-source-but-treated-restricted and why.
+- Prep talking points for "what breaks at 100x": single-node Chroma/SQLite won't scale past local demo concurrency; synchronous per-query Groq calls have no queueing/caching; PDF section-splitting is filing-format-specific and brittle across issuers; no real auth/identity (roles are a CLI flag, not authenticated sessions); re-embedding on every ingest run doesn't diff/incrementally update; local sentence-transformers embedding throughput becomes the bottleneck on large corpora without batching/GPU.

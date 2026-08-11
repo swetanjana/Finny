@@ -1,0 +1,2 @@
+[console_scripts]
+finny = finny.interface.cli:app

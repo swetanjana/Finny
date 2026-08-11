@@ -1,0 +1,14 @@
+groq
+sentence-transformers
+pandas
+openpyxl
+pdfplumber
+chromadb
+python-dotenv
+typer
+rich
+requests
+yfinance
+langchain
+langgraph
+langchain-groq
